@@ -88,6 +88,14 @@ def parse_args_file(filepath):
     return config
 
 
+def find_templates_dir():
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    lipids_dir = os.path.join(script_dir, 'Lipids')
+    if os.path.isdir(lipids_dir):
+        return lipids_dir
+    return None
+
+
 def main():
     print()
     print("MEMBRANE BUILDER")
@@ -170,12 +178,19 @@ def main():
 
     builder = MembraneBuilder(seed=config['seed'])
 
+    templates_dir = find_templates_dir()
+    if templates_dir is None:
+        print("Error: Lipids/ folder not found")
+        return 1
+
     try:
-        membrane = builder.build(membrane_config)
+        membrane = builder.build(
+            membrane_config,
+            use_templates=True,
+            templates_dir=templates_dir,
+        )
     except RuntimeError as e:
-        print(f"Error: {e}")
-        print()
-        print("Try increasing box size or reducing lipid count.")
+        print("Error: {}".format(e))
         return 1
 
     # Save output files
