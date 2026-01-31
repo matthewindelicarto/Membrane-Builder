@@ -14,10 +14,10 @@ box_z = 120.0
 # Available lipids: POPC, DPPC, DOPC, DMPC, POPE, DOPE, POPS, DOPS,
 #                   POPG, DOPG, PSM, SSM, CHOL, ERGO, POPI, TOCL
 
-POPC = 64, 64
+POPC = 84, 84
 # POPE = 16, 16
 # CHOL = 32, 32
-# POPS = 0, 8
+POPS = 0, 8
 
 # --- PHYSICAL PARAMETERS ---
 # Bending modulus in kT (leave blank to auto-calculate from composition)

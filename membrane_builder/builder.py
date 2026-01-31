@@ -29,12 +29,76 @@ class Atom:
     chain: str = "A"
 
     def to_pdb_line(self, atom_id: int) -> str:
-        return (
-            f"ATOM  {atom_id:5d} {self.name:4s} {self.residue_name:3s} "
-            f"{self.chain:1s}{self.residue_id:4d}    "
-            f"{self.x:8.3f}{self.y:8.3f}{self.z:8.3f}"
-            f"  1.00  0.00          {self.element:>2s}"
-        )
+        # Build PDB line character by character for exact column alignment
+        # PDB format columns (1-indexed):
+        #   1-6: ATOM/HETATM
+        #   7-11: serial number (right-justified)
+        #   12: space
+        #   13-16: atom name
+        #   17: alternate location
+        #   18-20: residue name (3 chars standard, but we use 4)
+        #   21: space (we put 4th char of resname here for lipids)
+        #   22: chain ID
+        #   23-26: residue sequence number
+        #   27: insertion code
+        #   28-30: spaces
+        #   31-38: x coordinate
+        #   39-46: y coordinate
+        #   47-54: z coordinate
+        #   55-60: occupancy
+        #   61-66: temperature factor
+        #   77-78: element symbol
+
+        # Start with 80 spaces
+        line = [' '] * 80
+
+        # Record name (1-6)
+        line[0:4] = 'ATOM'
+
+        # Serial number (7-11, right-justified)
+        serial = f"{atom_id:5d}"
+        line[6:11] = serial
+
+        # Atom name (13-16)
+        # Standard convention: 1-2 letter element symbols start at column 14
+        # 4-letter names start at column 13
+        if len(self.name) <= 3:
+            # Right-pad and start at column 14 (index 13)
+            name_str = f" {self.name:<3s}"
+        else:
+            name_str = f"{self.name:<4s}"
+        line[12:16] = name_str[:4]
+
+        # Residue name (18-21 for 4-char lipid names)
+        resname = self.residue_name[:4].ljust(4)
+        line[17:21] = resname
+
+        # Chain ID (22)
+        line[21] = self.chain
+
+        # Residue number (23-26, right-justified)
+        resnum = f"{self.residue_id:4d}"
+        line[22:26] = resnum
+
+        # Coordinates (31-38, 39-46, 47-54)
+        x_str = f"{self.x:8.3f}"
+        y_str = f"{self.y:8.3f}"
+        z_str = f"{self.z:8.3f}"
+        line[30:38] = x_str
+        line[38:46] = y_str
+        line[46:54] = z_str
+
+        # Occupancy (55-60)
+        line[54:60] = "  1.00"
+
+        # Temperature factor (61-66)
+        line[60:66] = "  0.00"
+
+        # Element (77-78, right-justified)
+        elem = f"{self.element:>2s}"
+        line[76:78] = elem
+
+        return ''.join(line).rstrip()
 
 
 @dataclass
@@ -374,19 +438,9 @@ class MembraneBuilder:
         use_templates: bool,
         templates_dir: Optional[str],
     ) -> PlacedLipid:
-        lipid_info = self.library.get(lipid_name)
-        if lipid_info is None:
-            lipid_info = self.library.get("POPC")  # Fallback
+        atoms = self._load_template_lipid(lipid_name, templates_dir, residue_id)
 
-        if use_templates and templates_dir:
-            atoms = self._load_template_lipid(
-                lipid_name, templates_dir, residue_id
-            )
-        else:
-            atoms = self._generate_simplified_lipid(
-                lipid_name, lipid_info, residue_id
-            )
-
+        # Find anchor atom (P for phospholipids, O3 for sterols)
         anchor_names = ["P", "O3", "C1"]
         anchor_idx = None
         for aname in anchor_names:
@@ -396,33 +450,40 @@ class MembraneBuilder:
                     break
             if anchor_idx is not None:
                 break
-
         if anchor_idx is None:
             anchor_idx = 0
 
-        anchor_pos = np.array([atoms[anchor_idx].x, atoms[anchor_idx].y, atoms[anchor_idx].z])
-        for atom in atoms:
-            atom.x -= anchor_pos[0]
-            atom.y -= anchor_pos[1]
-            atom.z -= anchor_pos[2]
+        # Get coordinates as array
+        coords = np.array([[a.x, a.y, a.z] for a in atoms])
 
+        # Center on anchor atom (P is near z=0 in conformers, tails point to -Z)
+        anchor_pos = coords[anchor_idx].copy()
+        coords -= anchor_pos
+
+        # Random rotation around Z axis for variety
         theta = self.rng.uniform(0, 2 * np.pi)
         cos_t, sin_t = np.cos(theta), np.sin(theta)
-        for atom in atoms:
-            x_new = cos_t * atom.x - sin_t * atom.y
-            y_new = sin_t * atom.x + cos_t * atom.y
-            atom.x, atom.y = x_new, y_new
+        x_new = cos_t * coords[:, 0] - sin_t * coords[:, 1]
+        y_new = sin_t * coords[:, 0] + cos_t * coords[:, 1]
+        coords[:, 0] = x_new
+        coords[:, 1] = y_new
 
+        # For bottom leaflet, flip so tails point up (toward center)
         if flip:
-            for atom in atoms:
-                atom.y = -atom.y
-                atom.z = -atom.z
+            coords[:, 2] = -coords[:, 2]
+
+        # Translate to final position
+        coords[:, 0] += site[0]
+        coords[:, 1] += site[1]
+        coords[:, 2] += z_anchor
+
+        # Update atom coordinates
+        for i, atom in enumerate(atoms):
+            atom.x = coords[i, 0]
+            atom.y = coords[i, 1]
+            atom.z = coords[i, 2]
 
         final_anchor = np.array([site[0], site[1], z_anchor])
-        for atom in atoms:
-            atom.x += site[0]
-            atom.y += site[1]
-            atom.z += z_anchor
 
         return PlacedLipid(
             lipid_type=lipid_name,
@@ -431,97 +492,6 @@ class MembraneBuilder:
             leaflet=leaflet,
             residue_id=residue_id,
         )
-
-    def _generate_simplified_lipid(
-        self,
-        lipid_name: str,
-        lipid_info: Lipid,
-        residue_id: int,
-    ) -> List[Atom]:
-        """Generate simplified lipid structure."""
-        atoms = []
-        resname = lipid_name[:3].upper()
-
-        if lipid_info.category.value == "STEROL":
-            atoms = self._generate_sterol_atoms(resname, residue_id)
-        else:
-            atoms = self._generate_phospholipid_atoms(
-                resname, residue_id, lipid_info
-            )
-
-        return atoms
-
-    def _generate_phospholipid_atoms(
-        self,
-        resname: str,
-        residue_id: int,
-        lipid_info: Lipid,
-    ) -> List[Atom]:
-        atoms = []
-
-        # Headgroup
-        atoms.append(Atom("N", "N", 0.0, 0.0, 5.0, resname, residue_id))
-        atoms.append(Atom("P", "P", 0.0, 0.0, 0.0, resname, residue_id))
-        atoms.append(Atom("O11", "O", 1.5, 0.0, 0.0, resname, residue_id))
-        atoms.append(Atom("O12", "O", -1.5, 0.0, 0.0, resname, residue_id))
-        atoms.append(Atom("O13", "O", 0.0, 1.2, 0.5, resname, residue_id))
-        atoms.append(Atom("O14", "O", 0.0, -1.2, 0.5, resname, residue_id))
-
-        # Glycerol
-        atoms.append(Atom("C1", "C", 0.0, 0.0, -3.0, resname, residue_id))
-        atoms.append(Atom("C2", "C", 0.0, 1.5, -4.5, resname, residue_id))
-        atoms.append(Atom("C3", "C", 0.0, -1.5, -4.5, resname, residue_id))
-
-        atoms.append(Atom("O21", "O", 0.0, 2.5, -5.5, resname, residue_id))
-        atoms.append(Atom("O31", "O", 0.0, -2.5, -5.5, resname, residue_id))
-
-        # Tails
-        sn1_carbons = lipid_info.tail_carbons[0]
-        for i in range(min(sn1_carbons, 16)):
-            z = -7.0 - i * 1.25
-            x = 0.3 * np.sin(i * 0.5) + 1.5
-            atoms.append(Atom(f"C2{i+1}", "C", x, 1.5, z, resname, residue_id))
-
-        sn2_carbons = lipid_info.tail_carbons[1]
-        for i in range(min(sn2_carbons, 18)):
-            z = -7.0 - i * 1.25
-            x = 0.3 * np.sin(i * 0.5 + np.pi) - 1.5
-            atoms.append(Atom(f"C3{i+1}", "C", x, -1.5, z, resname, residue_id))
-
-        return atoms
-
-    def _generate_sterol_atoms(
-        self,
-        resname: str,
-        residue_id: int,
-    ) -> List[Atom]:
-        atoms = []
-
-        atoms.append(Atom("O3", "O", 0.0, 0.0, 0.0, resname, residue_id))
-        atoms.append(Atom("C1", "C", 0.0, 1.2, -1.5, resname, residue_id))
-        atoms.append(Atom("C2", "C", 1.2, 1.2, -2.5, resname, residue_id))
-        atoms.append(Atom("C3", "C", 1.2, 0.0, -3.5, resname, residue_id))
-        atoms.append(Atom("C4", "C", 0.0, -1.2, -3.5, resname, residue_id))
-        atoms.append(Atom("C5", "C", -1.2, -1.2, -2.5, resname, residue_id))
-        atoms.append(Atom("C6", "C", -1.2, 0.0, -1.5, resname, residue_id))
-        atoms.append(Atom("C7", "C", 0.0, 0.0, -5.0, resname, residue_id))
-        atoms.append(Atom("C8", "C", 1.2, 0.0, -6.0, resname, residue_id))
-        atoms.append(Atom("C9", "C", 1.2, -1.2, -7.0, resname, residue_id))
-        atoms.append(Atom("C10", "C", 0.0, -1.2, -8.0, resname, residue_id))
-        atoms.append(Atom("C11", "C", -1.2, 0.0, -8.0, resname, residue_id))
-        atoms.append(Atom("C12", "C", -1.2, 1.2, -9.0, resname, residue_id))
-        atoms.append(Atom("C13", "C", 0.0, 1.2, -10.0, resname, residue_id))
-        atoms.append(Atom("C14", "C", 1.2, 0.0, -10.0, resname, residue_id))
-        atoms.append(Atom("C15", "C", 0.0, 0.0, -11.5, resname, residue_id))
-        atoms.append(Atom("C16", "C", 0.0, 0.0, -13.0, resname, residue_id))
-        atoms.append(Atom("C17", "C", 0.0, 0.0, -14.5, resname, residue_id))
-        atoms.append(Atom("C18", "C", 1.5, 0.0, -15.5, resname, residue_id))
-        atoms.append(Atom("C19", "C", 1.5, 0.0, -17.0, resname, residue_id))
-        atoms.append(Atom("C20", "C", 0.0, 0.0, -18.0, resname, residue_id))
-        atoms.append(Atom("C21", "C", -1.5, 0.0, -6.0, resname, residue_id))
-        atoms.append(Atom("C22", "C", 2.5, 0.0, -9.0, resname, residue_id))
-
-        return atoms
 
     def _load_template_lipid(
         self,
@@ -537,8 +507,10 @@ class MembraneBuilder:
             files = glob.glob(pattern)
 
         if not files:
-            lipid_info = self.library.get(lipid_name) or self.library.get("POPC")
-            return self._generate_simplified_lipid(lipid_name, lipid_info, residue_id)
+            raise RuntimeError(
+                "No template found for lipid: {}. "
+                "Add conformer files to Lipids/{}/conf1/".format(lipid_name, lipid_name.lower())
+            )
 
         conf_file = self.rng.choice(files)
 
@@ -572,11 +544,13 @@ class MembraneBuilder:
                 parts = line.split()
                 if len(parts) >= 7:
                     try:
-                        name = parts[4]
-                        resname = parts[3]
-                        x = float(parts[5])
-                        y = float(parts[6])
-                        z = float(parts[7])
+                        # CHARMM extended CRD format:
+                        # atom_id res_id resname atomname x y z segname ...
+                        name = parts[3]
+                        resname = parts[2]
+                        x = float(parts[4])
+                        y = float(parts[5])
+                        z = float(parts[6])
                         element = name[0]
                         atoms.append(Atom(name, element, x, y, z, resname, residue_id))
                     except (ValueError, IndexError):
