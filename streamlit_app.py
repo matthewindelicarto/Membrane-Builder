@@ -438,7 +438,7 @@ with col2:
             c2.metric("Atoms", f"{props['n_atoms']:,}")
             c3.metric("Thickness", f"{props['thickness']} A")
             c4.metric("Area/Lipid", f"{props['area_per_lipid']} A^2")
-            c5.metric("Kc", f"{props['bending_modulus']} kT")
+            c5.metric("Bending Modulus", f"{props['bending_modulus']} kT")
 
         # Permeability results
         if st.session_state.perm_result:
