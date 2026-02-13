@@ -812,13 +812,33 @@ with tab_lipid:
 
     with col2:
         st.subheader("3D Viewer")
-        if st.session_state.pdb_data:
-            # Check if current formulation matches built membrane
-            current_composition = {lip: top + bottom for lip, (top, bottom) in lipid_values.items() if top + bottom > 0}
-            built_composition = st.session_state.lipid_composition or {}
-            if current_composition != built_composition:
-                st.warning("⚠️ Formulation changed. Click 'Build Membrane' to update.")
 
+        # Auto-rebuild if formulation changed
+        current_composition = {lip: top + bottom for lip, (top, bottom) in lipid_values.items() if top + bottom > 0}
+        built_composition = st.session_state.lipid_composition or {}
+
+        if current_composition and current_composition != built_composition:
+            # Auto-rebuild membrane
+            lipids = {k: v for k, v in lipid_values.items() if v[0] > 0 or v[1] > 0}
+            if lipids:
+                try:
+                    config = MembraneConfig.create_simple(lipids=lipids, box_size=(float(box_x), float(box_y), 120.0))
+                    builder = MembraneBuilder(seed=12345)
+                    membrane = builder.build(config, use_templates=True, templates_dir="Lipids")
+                    st.session_state.pdb_data = membrane.to_pdb_string()
+                    st.session_state.membrane_props = {
+                        'thickness': round(membrane.properties.thickness, 1),
+                        'area_per_lipid': round(membrane.properties.area_per_lipid, 1),
+                        'bending_modulus': round(membrane.properties.bending_modulus, 2),
+                        'total_lipids': membrane.properties.total_lipids,
+                        'n_atoms': membrane.n_atoms
+                    }
+                    st.session_state.lipid_composition = current_composition
+                    st.session_state.perm_result = None
+                except Exception:
+                    pass
+
+        if st.session_state.pdb_data:
             style = st.radio("Style", ["stick", "line", "sphere"], horizontal=True, key="lipid_style")
             render_lipid_3dmol(st.session_state.pdb_data, style)
 
@@ -898,19 +918,36 @@ with tab_tpu:
 
     with col2:
         st.subheader("3D Viewer")
-        if st.session_state.tpu_membrane:
-            membrane = st.session_state.tpu_membrane
-            props = membrane.properties
 
-            # Check if current formulation matches built membrane
-            current_tpu_comp = {"Sparsa1": sparsa1_frac, "Sparsa2": sparsa2_frac,
-                               "Carbosil1": carbosil1_frac, "Carbosil2": carbosil2_frac}
-            built_tpu_comp = membrane.composition
+        # Auto-rebuild if formulation changed
+        current_tpu_comp = {"Sparsa1": sparsa1_frac, "Sparsa2": sparsa2_frac,
+                           "Carbosil1": carbosil1_frac, "Carbosil2": carbosil2_frac}
+
+        needs_rebuild = False
+        if st.session_state.tpu_membrane:
+            built_tpu_comp = st.session_state.tpu_membrane.composition
             if abs(current_tpu_comp.get("Sparsa1", 0) - built_tpu_comp.get("Sparsa1", 0)) > 0.01 or \
                abs(current_tpu_comp.get("Sparsa2", 0) - built_tpu_comp.get("Sparsa2", 0)) > 0.01 or \
                abs(current_tpu_comp.get("Carbosil1", 0) - built_tpu_comp.get("Carbosil1", 0)) > 0.01 or \
                abs(current_tpu_comp.get("Carbosil2", 0) - built_tpu_comp.get("Carbosil2", 0)) > 0.01:
-                st.warning("⚠️ Formulation changed. Click 'Build Membrane' to update.")
+                needs_rebuild = True
+
+        if needs_rebuild or (total > 0 and st.session_state.tpu_membrane is None):
+            # Auto-rebuild membrane
+            try:
+                config = TPUMembraneConfig(
+                    polymers=current_tpu_comp,
+                    thickness=float(thickness)
+                )
+                builder = TPUMembraneBuilder(seed=12345)
+                st.session_state.tpu_membrane = builder.build(config)
+                st.session_state.tpu_perm_result = None
+            except Exception:
+                pass
+
+        if st.session_state.tpu_membrane:
+            membrane = st.session_state.tpu_membrane
+            props = membrane.properties
 
             tpu_style = st.radio("Style", ["stick", "sphere", "line"], horizontal=True, key="tpu_style")
 
@@ -923,8 +960,8 @@ with tab_tpu:
 
             st.markdown("**Membrane Properties**")
             c1, c2, c3, c4, c5 = st.columns(5)
-            c1.metric("Thickness", f"{props.thickness_um} μm")
-            c2.metric("Density", f"{props.density:.2f} g/cm³")
+            c1.metric("Thickness", f"{props.thickness_um} um")
+            c2.metric("Density", f"{props.density:.2f} g/cm3")
             c3.metric("Water Uptake", f"{props.water_uptake:.1f}%")
             c4.metric("Free Volume", f"{props.free_volume_fraction:.3f}")
             c5.metric("Soft Seg.", f"{props.soft_segment_fraction*100:.0f}%")
