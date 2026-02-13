@@ -274,10 +274,10 @@ def generate_md_structure(composition, box_size=50, n_chains=20, membrane_type="
     if membrane_type == "tpu":
         total = sum(composition.values())
         if total == 0: total = 1
-        s1 = composition.get('Sparsa_27G26', 0) / total
-        s2 = composition.get('Sparsa_30G25', 0) / total
-        c1 = composition.get('Carbosil_2080A', 0) / total
-        c2 = composition.get('Carbosil_2090A', 0) / total
+        s1 = composition.get('Sparsa1', 0) / total
+        s2 = composition.get('Sparsa2', 0) / total
+        c1 = composition.get('Carbosil1', 0) / total
+        c2 = composition.get('Carbosil2', 0) / total
 
     bx = box_size
 
@@ -803,8 +803,8 @@ with tab_tpu:
             with st.spinner("Building membrane..."):
                 try:
                     config = TPUMembraneConfig(
-                        polymers={"Sparsa_27G26": sparsa1_frac, "Sparsa_30G25": sparsa2_frac,
-                                  "Carbosil_2080A": carbosil1_frac, "Carbosil_2090A": carbosil2_frac},
+                        polymers={"Sparsa1": sparsa1_frac, "Sparsa2": sparsa2_frac,
+                                  "Carbosil1": carbosil1_frac, "Carbosil2": carbosil2_frac},
                         thickness=float(thickness)
                     )
                     builder = TPUMembraneBuilder(seed=12345)
@@ -857,8 +857,8 @@ with tab_tpu:
             mol_info = {'name': st.session_state.tpu_perm_result['mol_name']} if st.session_state.tpu_perm_result else None
 
             comp = membrane.composition
-            sparsa_frac = comp.get("Sparsa_27G26", 0) + comp.get("Sparsa_30G25", 0)
-            carbosil_frac = comp.get("Carbosil_2080A", 0) + comp.get("Carbosil_2090A", 0)
+            sparsa_frac = comp.get("Sparsa1", 0) + comp.get("Sparsa2", 0)
+            carbosil_frac = comp.get("Carbosil1", 0) + comp.get("Carbosil2", 0)
 
             atoms = generate_tpu_polymer_chains(membrane, sparsa_frac, carbosil_frac)
             render_tpu_3dmol(atoms, carbosil_frac, tpu_style, mol_info)
@@ -883,54 +883,78 @@ with tab_tpu:
 
 with tab_md:
     st.title("MD Simulation Setup")
-    st.markdown("Generate GROMACS input files for molecular dynamics simulation.")
+    st.markdown("Generate GROMACS input files for molecular dynamics simulation using your built membranes.")
 
-    md_type = st.radio("Membrane Type", ["TPU", "Lipid"], horizontal=True, key="md_type")
+    # Check what membranes are available
+    has_lipid_membrane = st.session_state.pdb_data is not None
+    has_tpu_membrane = st.session_state.tpu_membrane is not None
 
-    col1, col2 = st.columns([1, 1])
+    if not has_lipid_membrane and not has_tpu_membrane:
+        st.warning("No membrane built yet. Please build a membrane in the Lipid Membranes or TPU Membranes tab first.")
+    else:
+        available_types = []
+        if has_tpu_membrane:
+            available_types.append("TPU")
+        if has_lipid_membrane:
+            available_types.append("Lipid")
 
-    with col1:
-        st.subheader("Composition")
-        if md_type == "TPU":
-            md_s1 = st.slider("Sparsa 1 (27G26) %", 0, 100, 30, key="md_s1")
-            md_s2 = st.slider("Sparsa 2 (30G25) %", 0, 100, 0, key="md_s2")
-            md_c1 = st.slider("Carbosil 1 (2080A) %", 0, 100, 70, key="md_c1")
-            md_c2 = st.slider("Carbosil 2 (2090A) %", 0, 100, 0, key="md_c2")
-            md_total = md_s1 + md_s2 + md_c1 + md_c2
-            if md_total > 0:
-                st.caption(f"Normalized: S1={md_s1/md_total*100:.0f}%, S2={md_s2/md_total*100:.0f}%, C1={md_c1/md_total*100:.0f}%, C2={md_c2/md_total*100:.0f}%")
-        else:
-            md_popc = st.slider("POPC", 0, 200, 64, key="md_popc")
-            md_pope = st.slider("POPE", 0, 200, 0, key="md_pope")
-            md_chol = st.slider("CHOL", 0, 200, 0, key="md_chol")
-            md_pops = st.slider("POPS", 0, 200, 0, key="md_pops")
-            st.caption(f"Total lipids: {md_popc + md_pope + md_chol + md_pops}")
+        md_type = st.radio("Use Membrane", available_types, horizontal=True, key="md_type")
 
-    with col2:
-        st.subheader("Simulation Parameters")
-        md_box_size = st.number_input("Box Size (Angstroms)", value=50, min_value=30, max_value=100, step=10, key="md_box")
-        md_n_chains = st.number_input("Number of Chains/Lipids", value=20, min_value=5, max_value=100, step=5, key="md_chains")
-        md_temp = st.number_input("Temperature (K)", value=310, min_value=270, max_value=400, step=10, key="md_temp")
-        md_ns = st.number_input("Production Run (ns)", value=10.0, min_value=1.0, max_value=100.0, step=1.0, key="md_ns")
+        col1, col2 = st.columns([1, 1])
 
-    st.divider()
+        with col1:
+            st.subheader("Membrane Summary")
+            if md_type == "TPU" and has_tpu_membrane:
+                membrane = st.session_state.tpu_membrane
+                comp = membrane.composition
+                st.markdown("**TPU Composition:**")
+                for poly, frac in comp.items():
+                    if frac > 0:
+                        st.write(f"- {poly}: {frac*100:.1f}%")
+                st.write(f"- Thickness: {membrane.thickness} um")
+            elif md_type == "Lipid" and has_lipid_membrane:
+                props = st.session_state.membrane_props
+                st.markdown("**Lipid Membrane:**")
+                st.write(f"- Total Lipids: {props['total_lipids']}")
+                st.write(f"- Atoms: {props['n_atoms']:,}")
+                st.write(f"- Thickness: {props['thickness']} A")
 
-    if st.button("Generate MD Files", type="primary", use_container_width=True, key="gen_md"):
-        with st.spinner("Generating simulation files..."):
-            if md_type == "TPU":
-                md_total = md_s1 + md_s2 + md_c1 + md_c2
-                if md_total == 0: md_total = 1
-                composition = {'Sparsa_27G26': md_s1/md_total, 'Sparsa_30G25': md_s2/md_total,
-                              'Carbosil_2080A': md_c1/md_total, 'Carbosil_2090A': md_c2/md_total}
-                membrane_type = "tpu"
-            else:
-                composition = {'POPC': md_popc, 'POPE': md_pope, 'CHOL': md_chol, 'POPS': md_pops}
-                composition = {k: v for k, v in composition.items() if v > 0}
-                membrane_type = "lipid"
+        with col2:
+            st.subheader("Simulation Parameters")
+            md_temp = st.number_input("Temperature (K)", value=310, min_value=270, max_value=400, step=10, key="md_temp")
+            md_ns = st.number_input("Production Run (ns)", value=10.0, min_value=1.0, max_value=100.0, step=1.0, key="md_ns")
 
-            zip_buffer, n_atoms, n_bonds = create_md_zip(composition, md_box_size, md_n_chains, md_temp, md_ns, membrane_type)
-            st.session_state.md_files = zip_buffer
-            st.success(f"Generated {n_atoms} atoms and {n_bonds} bonds!")
+        st.divider()
+
+        if st.button("Generate MD Files", type="primary", use_container_width=True, key="gen_md"):
+            with st.spinner("Generating simulation files..."):
+                if md_type == "TPU" and has_tpu_membrane:
+                    membrane = st.session_state.tpu_membrane
+                    composition = membrane.composition
+                    # Filter out zero-fraction polymers
+                    composition = {k: v for k, v in composition.items() if v > 0}
+                    membrane_type = "tpu"
+                    box_size = 50  # Default for TPU
+                    n_chains = 20
+                else:
+                    # Use the existing lipid membrane PDB data
+                    membrane_type = "lipid"
+                    props = st.session_state.membrane_props
+                    # Extract composition from what was built
+                    composition = {}
+                    for lip in ["POPC", "POPE", "POPS", "CHOL", "POPG"]:
+                        top = st.session_state.get(f"{lip}_top", 0)
+                        bottom = st.session_state.get(f"{lip}_bottom", 0)
+                        if top + bottom > 0:
+                            composition[lip] = top + bottom
+                    if not composition:
+                        composition = {"POPC": 128}
+                    box_size = 80
+                    n_chains = sum(composition.values())
+
+                zip_buffer, n_atoms, n_bonds = create_md_zip(composition, box_size, n_chains, md_temp, md_ns, membrane_type)
+                st.session_state.md_files = zip_buffer
+                st.success(f"Generated {n_atoms} atoms and {n_bonds} bonds!")
 
     if st.session_state.md_files:
         st.download_button("Download MD Simulation Package (.zip)", st.session_state.md_files,
