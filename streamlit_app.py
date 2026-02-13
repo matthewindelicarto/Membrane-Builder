@@ -18,7 +18,7 @@ st.set_page_config(
 )
 
 # Create main tabs
-tab_lipid, tab_tpu, tab_md = st.tabs(["Lipid Membranes", "TPU Membranes", "MD Simulation"])
+tab_lipid, tab_tpu, tab_perm, tab_md = st.tabs(["Lipid Membranes", "TPU Membranes", "Permeability", "MD Simulation"])
 
 # ============== SESSION STATE ==============
 if 'pdb_data' not in st.session_state:
@@ -33,6 +33,8 @@ if 'tpu_perm_result' not in st.session_state:
     st.session_state.tpu_perm_result = None
 if 'md_files' not in st.session_state:
     st.session_state.md_files = None
+if 'lipid_composition' not in st.session_state:
+    st.session_state.lipid_composition = {}
 
 # ============== LIPID MEMBRANE HELPER FUNCTIONS ==============
 
@@ -69,15 +71,7 @@ def calculate_box_dimensions(lipid_values):
     box_side = int(np.ceil(np.sqrt(required_area) / 5) * 5) + 5
     return max(40, min(200, box_side)), max(40, min(200, box_side))
 
-def render_lipid_3dmol(pdb_data, style="stick", molecule_info=None):
-    mol_colors = {"water": "0x3498db", "ethanol": "0x9b59b6", "caffeine": "0x8B4513",
-                  "aspirin": "0xe74c3c", "glucose": "0xf39c12", "custom": "0x1abc9c"}
-    mol_sphere_js = ""
-    if molecule_info:
-        color = mol_colors.get(molecule_info['name'], "0x1abc9c")
-        z_pos = molecule_info['z']
-        mol_sphere_js = f"viewer.addSphere({{center: {{x: 0, y: 0, z: {z_pos}}}, radius: 3, color: {color}, opacity: 0.9}});"
-
+def render_lipid_3dmol(pdb_data, style="stick"):
     style_js = {'stick': 'viewer.setStyle({}, {stick: {radius: 0.15}, sphere: {scale: 0.25}});',
                 'line': 'viewer.setStyle({}, {line: {linewidth: 1.5}});',
                 'sphere': 'viewer.setStyle({}, {sphere: {scale: 0.4}});'}.get(style, '')
@@ -90,7 +84,6 @@ def render_lipid_3dmol(pdb_data, style="stick", molecule_info=None):
         var pdb = `{pdb_escaped}`;
         viewer.addModel(pdb, "pdb");
         {style_js}
-        {mol_sphere_js}
         viewer.zoomTo(); viewer.render();
     </script>
     """
@@ -196,7 +189,7 @@ def generate_tpu_polymer_chains(membrane, sparsa_frac, carbosil_frac):
                 chain_count += 1
     return atoms
 
-def render_tpu_3dmol(atoms, carbosil_frac, style, molecule_info=None):
+def render_tpu_3dmol(atoms, carbosil_frac, style):
     pdb_lines = []
     for atom in atoms:
         line = f"ATOM  {atom['id']:5d} {atom['name']:4s} {atom['res_name']:3s}  {atom['res_id']:4d}    {atom['x']:8.3f}{atom['y']:8.3f}{atom['z']:8.3f}  1.00  0.00          {atom['element']:>2s}"
@@ -227,12 +220,6 @@ def render_tpu_3dmol(atoms, carbosil_frac, style, molecule_info=None):
         viewer.setStyle({resn: 'URE'}, {line: {linewidth: 3, color: '0xe74c3c'}});
         """
 
-    mol_colors = {"phenol": "0xe74c3c", "m-cresol": "0x9b59b6", "glucose": "0xf39c12", "oxygen": "0x3498db"}
-    mol_sphere_js = ""
-    if molecule_info:
-        color = mol_colors.get(molecule_info['name'], "0x1abc9c")
-        mol_sphere_js = f"viewer.addSphere({{center: {{x: 0, y: 0, z: 0}}, radius: 2.5, color: {color}, opacity: 0.95}});"
-
     box_x, box_y, box_z = 40, 40, 15
     html = f"""
     <script src="https://3dmol.org/build/3Dmol-min.js"></script>
@@ -256,13 +243,222 @@ def render_tpu_3dmol(atoms, carbosil_frac, style, molecule_info=None):
         viewer.addLine({{start: {{x: hx, y: -hy, z: -hz}}, end: {{x: hx, y: -hy, z: hz}}, color: boxColor, linewidth: boxWidth}});
         viewer.addLine({{start: {{x: hx, y: hy, z: -hz}}, end: {{x: hx, y: hy, z: hz}}, color: boxColor, linewidth: boxWidth}});
         viewer.addLine({{start: {{x: -hx, y: hy, z: -hz}}, end: {{x: -hx, y: hy, z: hz}}, color: boxColor, linewidth: boxWidth}});
-        {mol_sphere_js}
         viewer.zoomTo(); viewer.zoom(0.5);
         viewer.rotate(20, {{x: 1, y: 0, z: 0}}); viewer.rotate(-15, {{x: 0, y: 1, z: 0}});
         viewer.render();
     </script>
     """
     components.html(html, height=520)
+
+# ============== PERMEABILITY VISUALIZATION ==============
+
+def render_lipid_permeability_3dmol(pdb_data, mol_name, permeability, n_molecules=15):
+    """Render lipid membrane with animated molecules passing through"""
+    # Speed based on permeability (log scale)
+    log_p = np.log10(permeability) if permeability > 0 else -10
+    # Map log_p from [-12, -4] to speed [0.5, 5]
+    speed = max(0.3, min(5.0, (log_p + 12) / 8 * 4.5 + 0.5))
+
+    mol_colors = {
+        "water": "0x3498db", "ethanol": "0x9b59b6", "caffeine": "0x8B4513",
+        "aspirin": "0xe74c3c", "glucose": "0xf39c12", "custom": "0x1abc9c"
+    }
+    color = mol_colors.get(mol_name.lower(), "0x1abc9c")
+
+    pdb_escaped = pdb_data.replace('\\', '\\\\').replace('`', '\\`').replace('$', '\\$')
+
+    # Generate random starting positions for molecules
+    mol_positions = []
+    np.random.seed(42)
+    for i in range(n_molecules):
+        x = np.random.uniform(-25, 25)
+        y = np.random.uniform(-25, 25)
+        z_start = np.random.uniform(40, 70)  # Start above membrane
+        phase = np.random.uniform(0, 2 * np.pi)  # Random phase for staggered animation
+        mol_positions.append((x, y, z_start, phase))
+
+    html = f"""
+    <script src="https://3dmol.org/build/3Dmol-min.js"></script>
+    <div id="viewer_perm_lipid" style="width: 100%; height: 550px; position: relative;"></div>
+    <script>
+        var viewer = $3Dmol.createViewer("viewer_perm_lipid", {{backgroundColor: "0x1a1a1a"}});
+        var pdb = `{pdb_escaped}`;
+        viewer.addModel(pdb, "pdb");
+        viewer.setStyle({{}}, {{stick: {{radius: 0.15}}, sphere: {{scale: 0.25}}}});
+
+        // Add molecules
+        var molecules = [];
+        var positions = {mol_positions};
+        var speed = {speed};
+        var molColor = {color};
+
+        for (var i = 0; i < positions.length; i++) {{
+            var pos = positions[i];
+            var sphere = viewer.addSphere({{
+                center: {{x: pos[0], y: pos[1], z: pos[2]}},
+                radius: 2.0,
+                color: molColor,
+                opacity: 0.85
+            }});
+            molecules.push({{
+                sphere: sphere,
+                x: pos[0],
+                y: pos[1],
+                z: pos[2],
+                phase: pos[3],
+                startZ: pos[2]
+            }});
+        }}
+
+        viewer.zoomTo();
+        viewer.zoom(0.8);
+        viewer.rotate(15, {{x: 1, y: 0, z: 0}});
+        viewer.render();
+
+        // Animation loop
+        var time = 0;
+        function animate() {{
+            time += 0.016;
+            for (var i = 0; i < molecules.length; i++) {{
+                var mol = molecules[i];
+                // Calculate new z position (moving downward through membrane)
+                var t = (time * speed + mol.phase) % (Math.PI * 2);
+                var newZ = mol.startZ - (t / (Math.PI * 2)) * 120;
+                if (newZ < -50) newZ = mol.startZ;
+
+                // Update sphere position
+                viewer.removeShape(mol.sphere);
+                mol.sphere = viewer.addSphere({{
+                    center: {{x: mol.x, y: mol.y, z: newZ}},
+                    radius: 2.0,
+                    color: molColor,
+                    opacity: 0.85
+                }});
+            }}
+            viewer.render();
+            requestAnimationFrame(animate);
+        }}
+        animate();
+    </script>
+    """
+    components.html(html, height=570)
+
+def render_tpu_permeability_3dmol(atoms, carbosil_frac, mol_name, permeability, n_molecules=12):
+    """Render TPU membrane with animated molecules passing through"""
+    # Speed based on permeability
+    log_p = np.log10(permeability) if permeability > 0 else -10
+    speed = max(0.3, min(5.0, (log_p + 12) / 8 * 4.5 + 0.5))
+
+    mol_colors = {
+        "oxygen": "0x3498db", "glucose": "0xf39c12",
+        "phenol": "0xe74c3c", "m-cresol": "0x9b59b6"
+    }
+    color = mol_colors.get(mol_name.lower(), "0x1abc9c")
+
+    pdb_lines = []
+    for atom in atoms:
+        line = f"ATOM  {atom['id']:5d} {atom['name']:4s} {atom['res_name']:3s}  {atom['res_id']:4d}    {atom['x']:8.3f}{atom['y']:8.3f}{atom['z']:8.3f}  1.00  0.00          {atom['element']:>2s}"
+        pdb_lines.append(line)
+    pdb_lines.append("END")
+    pdb_data = "\n".join(pdb_lines)
+    pdb_escaped = pdb_data.replace('\\', '\\\\').replace('`', '\\`').replace('$', '\\$')
+
+    # Generate random starting positions
+    mol_positions = []
+    np.random.seed(42)
+    for i in range(n_molecules):
+        x = np.random.uniform(-15, 15)
+        y = np.random.uniform(-15, 15)
+        z_start = np.random.uniform(15, 25)
+        phase = np.random.uniform(0, 2 * np.pi)
+        mol_positions.append((x, y, z_start, phase))
+
+    box_x, box_y, box_z = 40, 40, 15
+
+    html = f"""
+    <script src="https://3dmol.org/build/3Dmol-min.js"></script>
+    <div id="viewer_perm_tpu" style="width: 100%; height: 550px; position: relative;"></div>
+    <script>
+        var viewer = $3Dmol.createViewer("viewer_perm_tpu", {{backgroundColor: "0x1a1a1a"}});
+        var pdb = `{pdb_escaped}`;
+        viewer.addModel(pdb, "pdb");
+
+        viewer.setStyle({{resn: 'PEG'}}, {{stick: {{radius: 0.12, colorscheme: 'greenCarbon'}}}});
+        viewer.setStyle({{resn: 'PDM'}}, {{stick: {{radius: 0.14, colorscheme: 'blueCarbon'}}}});
+        viewer.setStyle({{resn: 'URE'}}, {{stick: {{radius: 0.14, colorscheme: 'orangeCarbon'}}}});
+        viewer.setStyle({{elem: 'SI'}}, {{stick: {{radius: 0.16}}, sphere: {{scale: 0.3, color: '0xf1c40f'}}}});
+
+        // Box lines
+        var hx = {box_x}/2, hy = {box_y}/2, hz = {box_z}/2;
+        var boxColor = 0x555555;
+        viewer.addLine({{start: {{x: -hx, y: -hy, z: -hz}}, end: {{x: hx, y: -hy, z: -hz}}, color: boxColor}});
+        viewer.addLine({{start: {{x: hx, y: -hy, z: -hz}}, end: {{x: hx, y: hy, z: -hz}}, color: boxColor}});
+        viewer.addLine({{start: {{x: hx, y: hy, z: -hz}}, end: {{x: -hx, y: hy, z: -hz}}, color: boxColor}});
+        viewer.addLine({{start: {{x: -hx, y: hy, z: -hz}}, end: {{x: -hx, y: -hy, z: -hz}}, color: boxColor}});
+        viewer.addLine({{start: {{x: -hx, y: -hy, z: hz}}, end: {{x: hx, y: -hy, z: hz}}, color: boxColor}});
+        viewer.addLine({{start: {{x: hx, y: -hy, z: hz}}, end: {{x: hx, y: hy, z: hz}}, color: boxColor}});
+        viewer.addLine({{start: {{x: hx, y: hy, z: hz}}, end: {{x: -hx, y: hy, z: hz}}, color: boxColor}});
+        viewer.addLine({{start: {{x: -hx, y: hy, z: hz}}, end: {{x: -hx, y: -hy, z: hz}}, color: boxColor}});
+        viewer.addLine({{start: {{x: -hx, y: -hy, z: -hz}}, end: {{x: -hx, y: -hy, z: hz}}, color: boxColor}});
+        viewer.addLine({{start: {{x: hx, y: -hy, z: -hz}}, end: {{x: hx, y: -hy, z: hz}}, color: boxColor}});
+        viewer.addLine({{start: {{x: hx, y: hy, z: -hz}}, end: {{x: hx, y: hy, z: hz}}, color: boxColor}});
+        viewer.addLine({{start: {{x: -hx, y: hy, z: -hz}}, end: {{x: -hx, y: hy, z: hz}}, color: boxColor}});
+
+        // Add molecules
+        var molecules = [];
+        var positions = {mol_positions};
+        var speed = {speed};
+        var molColor = {color};
+
+        for (var i = 0; i < positions.length; i++) {{
+            var pos = positions[i];
+            var sphere = viewer.addSphere({{
+                center: {{x: pos[0], y: pos[1], z: pos[2]}},
+                radius: 1.5,
+                color: molColor,
+                opacity: 0.85
+            }});
+            molecules.push({{
+                sphere: sphere,
+                x: pos[0],
+                y: pos[1],
+                z: pos[2],
+                phase: pos[3],
+                startZ: pos[2]
+            }});
+        }}
+
+        viewer.zoomTo();
+        viewer.zoom(0.5);
+        viewer.rotate(20, {{x: 1, y: 0, z: 0}});
+        viewer.rotate(-15, {{x: 0, y: 1, z: 0}});
+        viewer.render();
+
+        // Animation
+        var time = 0;
+        function animate() {{
+            time += 0.016;
+            for (var i = 0; i < molecules.length; i++) {{
+                var mol = molecules[i];
+                var t = (time * speed + mol.phase) % (Math.PI * 2);
+                var newZ = mol.startZ - (t / (Math.PI * 2)) * 50;
+                if (newZ < -25) newZ = mol.startZ;
+
+                viewer.removeShape(mol.sphere);
+                mol.sphere = viewer.addSphere({{
+                    center: {{x: mol.x, y: mol.y, z: newZ}},
+                    radius: 1.5,
+                    color: molColor,
+                    opacity: 0.85
+                }});
+            }}
+            viewer.render();
+            requestAnimationFrame(animate);
+        }}
+        animate();
+    </script>
+    """
+    components.html(html, height=570)
 
 # ============== MD SIMULATION HELPER FUNCTIONS ==============
 
@@ -666,6 +862,7 @@ with tab_lipid:
                             'total_lipids': membrane.properties.total_lipids,
                             'n_atoms': membrane.n_atoms
                         }
+                        st.session_state.lipid_composition = {lip: top + bottom for lip, (top, bottom) in lipid_values.items() if top + bottom > 0}
                         st.session_state.perm_result = None
                         st.success("Membrane built!")
                     except Exception as e:
@@ -675,68 +872,11 @@ with tab_lipid:
             st.download_button("Download PDB", st.session_state.pdb_data, file_name="membrane.pdb",
                               mime="text/plain", use_container_width=True)
 
-        st.divider()
-        st.subheader("Permeability Calculator")
-
-        mol_presets = {
-            "Water": {"mw": 18, "asa": 40, "hbd": 2, "hba": 1, "charge": 0, "pka": None},
-            "Ethanol": {"mw": 46, "asa": 80, "hbd": 1, "hba": 1, "charge": 0, "pka": None},
-            "Glucose": {"mw": 180, "asa": 180, "hbd": 5, "hba": 6, "charge": 0, "pka": None},
-            "Caffeine": {"mw": 194, "asa": 150, "hbd": 0, "hba": 3, "charge": 0, "pka": None},
-            "Aspirin": {"mw": 180, "asa": 140, "hbd": 1, "hba": 4, "charge": -1, "pka": 3.5},
-        }
-
-        selected_mol = st.selectbox("Preset Molecule", ["Custom"] + list(mol_presets.keys()))
-
-        if selected_mol != "Custom":
-            preset = mol_presets[selected_mol]
-            mol_name, mol_mw, mol_asa = selected_mol.lower(), preset["mw"], preset["asa"]
-            mol_hbd, mol_hba, mol_charge, mol_pka = preset["hbd"], preset["hba"], preset["charge"], preset["pka"]
-        else:
-            mol_name, mol_mw, mol_asa, mol_hbd, mol_hba, mol_charge, mol_pka = "custom", 100, 100, 0, 0, 0, None
-
-        c1, c2 = st.columns(2)
-        with c1:
-            mol_mw = st.number_input("Molecular Weight", value=mol_mw, min_value=1)
-            mol_hbd = st.number_input("H-Bond Donors", value=mol_hbd, min_value=0)
-            mol_charge = st.number_input("Charge", value=float(mol_charge), step=0.1)
-        with c2:
-            mol_asa = st.number_input("Surface Area (A^2)", value=mol_asa, min_value=1)
-            mol_hba = st.number_input("H-Bond Acceptors", value=mol_hba, min_value=0)
-            pka_input = st.text_input("pKa", value=str(mol_pka) if mol_pka else "")
-
-        if st.button("Calculate Permeability", type="primary", use_container_width=True, key="calc_lipid"):
-            if not st.session_state.pdb_data:
-                st.error("Build a membrane first")
-            else:
-                with st.spinner("Calculating..."):
-                    try:
-                        pka_val = float(pka_input) if pka_input else None
-                        mol = MoleculeDescriptor.simple(name=mol_name, molecular_weight=float(mol_mw),
-                            total_asa=float(mol_asa), n_hbd=int(mol_hbd), n_hba=int(mol_hba),
-                            charge=float(mol_charge), pka=pka_val)
-                        composition = {lip: top + bottom for lip, (top, bottom) in lipid_values.items() if top + bottom > 0}
-                        if not composition: composition = {"POPC": 128}
-                        predictor = PermeabilityPredictor(composition=composition)
-                        result = predictor.calculate(mol, "BLM")
-                        classification = "high" if result.log_p > -6 else "moderate" if result.log_p > -8 else "low"
-                        st.session_state.perm_result = {
-                            'log_p': round(result.log_p, 2), 'permeability': f"{result.permeability_cm_s:.2e}",
-                            'binding_energy': round(result.membrane_bound_energy, 1),
-                            'binding_position': round(result.binding_position, 1),
-                            'classification': classification, 'mol_name': mol_name
-                        }
-                        st.success("Calculated!")
-                    except Exception as e:
-                        st.error(f"Error: {e}")
-
     with col2:
         st.subheader("3D Viewer")
         if st.session_state.pdb_data:
             style = st.radio("Style", ["stick", "line", "sphere"], horizontal=True, key="lipid_style")
-
-            mol_info = {'name': st.session_state.perm_result['mol_name'], 'z': st.session_state.perm_result['binding_position']} if st.session_state.perm_result else None
-            render_lipid_3dmol(st.session_state.pdb_data, style, mol_info)
+            render_lipid_3dmol(st.session_state.pdb_data, style)
 
             if st.session_state.membrane_props:
                 st.markdown("**Membrane Properties**")
@@ -747,18 +887,6 @@ with tab_lipid:
                 c3.metric("Thickness", f"{props['thickness']} A")
                 c4.metric("Area/Lipid", f"{props['area_per_lipid']} A^2")
                 c5.metric("Bending Mod.", f"{props['bending_modulus']} kT")
-
-            if st.session_state.perm_result:
-                st.divider()
-                st.markdown("**Permeability Results**")
-                res = st.session_state.perm_result
-                c1, c2, c3, c4 = st.columns(4)
-                c1.metric("log P", res['log_p'])
-                c2.metric("P (cm/s)", res['permeability'])
-                c3.metric("Binding", f"{res['binding_energy']} kJ/mol")
-                class_colors = {"high": "green", "moderate": "orange", "low": "red"}
-                c4.markdown(f"**Classification**")
-                c4.markdown(f":{class_colors[res['classification']]}[{res['classification'].upper()}]")
         else:
             st.info("Build a membrane to see the 3D structure")
 
@@ -824,28 +952,6 @@ with tab_tpu:
             st.download_button("Download Report", "\n".join(report), file_name="tpu_membrane_report.txt",
                               mime="text/plain", use_container_width=True)
 
-        st.divider()
-        st.subheader("Permeability Calculator")
-        tpu_mol_presets = {"Phenol": "phenol", "m-Cresol": "m-cresol", "Glucose": "glucose", "Oxygen": "oxygen"}
-        selected_tpu_mol = st.selectbox("Molecule", list(tpu_mol_presets.keys()), key="tpu_mol")
-
-        if st.button("Calculate Permeability", type="primary", use_container_width=True, key="calc_tpu"):
-            if st.session_state.tpu_membrane is None:
-                st.error("Build a membrane first")
-            else:
-                with st.spinner("Calculating..."):
-                    try:
-                        predictor = TPUPermeabilityPredictor(
-                            composition=st.session_state.tpu_membrane.composition,
-                            thickness_um=st.session_state.tpu_membrane.thickness
-                        )
-                        mol_name = tpu_mol_presets[selected_tpu_mol]
-                        result = predictor.calculate_preset(mol_name)
-                        st.session_state.tpu_perm_result = {'permeability': f"{result.permeability_cm_s:.2e}", 'mol_name': mol_name}
-                        st.success("Calculated!")
-                    except Exception as e:
-                        st.error(f"Error: {e}")
-
     with col2:
         st.subheader("3D Viewer")
         if st.session_state.tpu_membrane:
@@ -854,14 +960,12 @@ with tab_tpu:
 
             tpu_style = st.radio("Style", ["stick", "sphere", "line"], horizontal=True, key="tpu_style")
 
-            mol_info = {'name': st.session_state.tpu_perm_result['mol_name']} if st.session_state.tpu_perm_result else None
-
             comp = membrane.composition
             sparsa_frac = comp.get("Sparsa1", 0) + comp.get("Sparsa2", 0)
             carbosil_frac = comp.get("Carbosil1", 0) + comp.get("Carbosil2", 0)
 
             atoms = generate_tpu_polymer_chains(membrane, sparsa_frac, carbosil_frac)
-            render_tpu_3dmol(atoms, carbosil_frac, tpu_style, mol_info)
+            render_tpu_3dmol(atoms, carbosil_frac, tpu_style)
 
             st.markdown("**Membrane Properties**")
             c1, c2, c3, c4, c5 = st.columns(5)
@@ -870,22 +974,180 @@ with tab_tpu:
             c3.metric("Water Uptake", f"{props.water_uptake:.1f}%")
             c4.metric("Free Volume", f"{props.free_volume_fraction:.3f}")
             c5.metric("Soft Seg.", f"{props.soft_segment_fraction*100:.0f}%")
-
-            if st.session_state.tpu_perm_result:
-                st.divider()
-                res = st.session_state.tpu_perm_result
-                st.metric("Permeability (cm/s)", res['permeability'])
         else:
             st.info("Build a membrane to see the 3D structure")
 
 
-# ============== TAB 3: MD SIMULATION ==============
+# ============== TAB 3: PERMEABILITY ==============
+
+with tab_perm:
+    st.title("Permeability Calculator")
+
+    has_lipid = st.session_state.pdb_data is not None
+    has_tpu = st.session_state.tpu_membrane is not None
+
+    if not has_lipid and not has_tpu:
+        st.warning("Build a membrane first in the Lipid Membranes or TPU Membranes tab.")
+    else:
+        available = []
+        if has_lipid:
+            available.append("Lipid Membrane")
+        if has_tpu:
+            available.append("TPU Membrane")
+
+        perm_membrane_type = st.radio("Select Membrane", available, horizontal=True, key="perm_membrane_type")
+
+        col1, col2 = st.columns([1, 2])
+
+        with col1:
+            st.subheader("Molecule Selection")
+
+            if perm_membrane_type == "Lipid Membrane":
+                # Lipid membrane molecules
+                mol_presets = {
+                    "Water": {"mw": 18, "asa": 40, "hbd": 2, "hba": 1, "charge": 0, "pka": None},
+                    "Ethanol": {"mw": 46, "asa": 80, "hbd": 1, "hba": 1, "charge": 0, "pka": None},
+                    "Glucose": {"mw": 180, "asa": 180, "hbd": 5, "hba": 6, "charge": 0, "pka": None},
+                    "Caffeine": {"mw": 194, "asa": 150, "hbd": 0, "hba": 3, "charge": 0, "pka": None},
+                    "Aspirin": {"mw": 180, "asa": 140, "hbd": 1, "hba": 4, "charge": -1, "pka": 3.5},
+                }
+
+                selected_mol = st.selectbox("Molecule", ["Custom"] + list(mol_presets.keys()), key="perm_lipid_mol")
+
+                if selected_mol != "Custom":
+                    preset = mol_presets[selected_mol]
+                    mol_name, mol_mw, mol_asa = selected_mol.lower(), preset["mw"], preset["asa"]
+                    mol_hbd, mol_hba, mol_charge, mol_pka = preset["hbd"], preset["hba"], preset["charge"], preset["pka"]
+                else:
+                    mol_name, mol_mw, mol_asa, mol_hbd, mol_hba, mol_charge, mol_pka = "custom", 100, 100, 0, 0, 0, None
+
+                c1, c2 = st.columns(2)
+                with c1:
+                    mol_mw = st.number_input("Molecular Weight", value=mol_mw, min_value=1, key="perm_mw")
+                    mol_hbd = st.number_input("H-Bond Donors", value=mol_hbd, min_value=0, key="perm_hbd")
+                    mol_charge = st.number_input("Charge", value=float(mol_charge), step=0.1, key="perm_charge")
+                with c2:
+                    mol_asa = st.number_input("Surface Area (A^2)", value=mol_asa, min_value=1, key="perm_asa")
+                    mol_hba = st.number_input("H-Bond Acceptors", value=mol_hba, min_value=0, key="perm_hba")
+                    pka_input = st.text_input("pKa", value=str(mol_pka) if mol_pka else "", key="perm_pka")
+
+                if st.button("Calculate Permeability", type="primary", use_container_width=True, key="calc_perm_lipid"):
+                    with st.spinner("Calculating..."):
+                        try:
+                            pka_val = float(pka_input) if pka_input else None
+                            mol = MoleculeDescriptor.simple(name=mol_name, molecular_weight=float(mol_mw),
+                                total_asa=float(mol_asa), n_hbd=int(mol_hbd), n_hba=int(mol_hba),
+                                charge=float(mol_charge), pka=pka_val)
+                            composition = st.session_state.lipid_composition
+                            if not composition: composition = {"POPC": 128}
+                            predictor = PermeabilityPredictor(composition=composition)
+                            result = predictor.calculate(mol, "BLM")
+                            classification = "high" if result.log_p > -6 else "moderate" if result.log_p > -8 else "low"
+                            st.session_state.perm_result = {
+                                'log_p': round(result.log_p, 2),
+                                'permeability': result.permeability_cm_s,
+                                'permeability_str': f"{result.permeability_cm_s:.2e}",
+                                'binding_energy': round(result.membrane_bound_energy, 1),
+                                'binding_position': round(result.binding_position, 1),
+                                'classification': classification,
+                                'mol_name': mol_name
+                            }
+                            st.success("Calculated!")
+                        except Exception as e:
+                            st.error(f"Error: {e}")
+
+            else:
+                # TPU membrane molecules (only oxygen, glucose, phenol, m-cresol)
+                tpu_mol_presets = {"Oxygen": "oxygen", "Glucose": "glucose", "Phenol": "phenol", "m-Cresol": "m-cresol"}
+                selected_tpu_mol = st.selectbox("Molecule", list(tpu_mol_presets.keys()), key="perm_tpu_mol")
+
+                if st.button("Calculate Permeability", type="primary", use_container_width=True, key="calc_perm_tpu"):
+                    with st.spinner("Calculating..."):
+                        try:
+                            predictor = TPUPermeabilityPredictor(
+                                composition=st.session_state.tpu_membrane.composition,
+                                thickness_um=st.session_state.tpu_membrane.thickness
+                            )
+                            mol_name = tpu_mol_presets[selected_tpu_mol]
+                            result = predictor.calculate_preset(mol_name)
+                            st.session_state.tpu_perm_result = {
+                                'permeability': result.permeability_cm_s,
+                                'permeability_str': f"{result.permeability_cm_s:.2e}",
+                                'mol_name': mol_name
+                            }
+                            st.success("Calculated!")
+                        except Exception as e:
+                            st.error(f"Error: {e}")
+
+            # Show results
+            st.divider()
+            st.subheader("Results")
+
+            if perm_membrane_type == "Lipid Membrane" and st.session_state.perm_result:
+                res = st.session_state.perm_result
+                c1, c2 = st.columns(2)
+                c1.metric("log P", res['log_p'])
+                c2.metric("P (cm/s)", res['permeability_str'])
+                c1.metric("Binding Energy", f"{res['binding_energy']} kJ/mol")
+                class_colors = {"high": "green", "moderate": "orange", "low": "red"}
+                c2.markdown(f"**Classification:** :{class_colors[res['classification']]}[{res['classification'].upper()}]")
+
+            elif perm_membrane_type == "TPU Membrane" and st.session_state.tpu_perm_result:
+                res = st.session_state.tpu_perm_result
+                st.metric("Permeability (cm/s)", res['permeability_str'])
+
+        with col2:
+            st.subheader("Permeation Visualization")
+
+            if perm_membrane_type == "Lipid Membrane":
+                if st.session_state.perm_result and st.session_state.pdb_data:
+                    res = st.session_state.perm_result
+                    n_mols = st.slider("Number of molecules", 5, 25, 15, key="n_mols_lipid")
+                    render_lipid_permeability_3dmol(
+                        st.session_state.pdb_data,
+                        res['mol_name'],
+                        res['permeability'],
+                        n_mols
+                    )
+                    st.caption(f"Molecule speed reflects permeability: {res['permeability_str']} cm/s")
+                elif st.session_state.pdb_data:
+                    st.info("Calculate permeability to see molecules passing through the membrane")
+                    render_lipid_3dmol(st.session_state.pdb_data, "stick")
+
+            else:  # TPU
+                if st.session_state.tpu_perm_result and st.session_state.tpu_membrane:
+                    res = st.session_state.tpu_perm_result
+                    membrane = st.session_state.tpu_membrane
+                    comp = membrane.composition
+                    sparsa_frac = comp.get("Sparsa1", 0) + comp.get("Sparsa2", 0)
+                    carbosil_frac = comp.get("Carbosil1", 0) + comp.get("Carbosil2", 0)
+                    atoms = generate_tpu_polymer_chains(membrane, sparsa_frac, carbosil_frac)
+
+                    n_mols = st.slider("Number of molecules", 5, 20, 12, key="n_mols_tpu")
+                    render_tpu_permeability_3dmol(
+                        atoms,
+                        carbosil_frac,
+                        res['mol_name'],
+                        res['permeability'],
+                        n_mols
+                    )
+                    st.caption(f"Molecule speed reflects permeability: {res['permeability_str']} cm/s")
+                elif st.session_state.tpu_membrane:
+                    st.info("Calculate permeability to see molecules passing through the membrane")
+                    membrane = st.session_state.tpu_membrane
+                    comp = membrane.composition
+                    sparsa_frac = comp.get("Sparsa1", 0) + comp.get("Sparsa2", 0)
+                    carbosil_frac = comp.get("Carbosil1", 0) + comp.get("Carbosil2", 0)
+                    atoms = generate_tpu_polymer_chains(membrane, sparsa_frac, carbosil_frac)
+                    render_tpu_3dmol(atoms, carbosil_frac, "stick")
+
+
+# ============== TAB 4: MD SIMULATION ==============
 
 with tab_md:
     st.title("MD Simulation Setup")
     st.markdown("Generate GROMACS input files for molecular dynamics simulation using your built membranes.")
 
-    # Check what membranes are available
     has_lipid_membrane = st.session_state.pdb_data is not None
     has_tpu_membrane = st.session_state.tpu_membrane is not None
 
@@ -931,22 +1193,13 @@ with tab_md:
                 if md_type == "TPU" and has_tpu_membrane:
                     membrane = st.session_state.tpu_membrane
                     composition = membrane.composition
-                    # Filter out zero-fraction polymers
                     composition = {k: v for k, v in composition.items() if v > 0}
                     membrane_type = "tpu"
-                    box_size = 50  # Default for TPU
+                    box_size = 50
                     n_chains = 20
                 else:
-                    # Use the existing lipid membrane PDB data
                     membrane_type = "lipid"
-                    props = st.session_state.membrane_props
-                    # Extract composition from what was built
-                    composition = {}
-                    for lip in ["POPC", "POPE", "POPS", "CHOL", "POPG"]:
-                        top = st.session_state.get(f"{lip}_top", 0)
-                        bottom = st.session_state.get(f"{lip}_bottom", 0)
-                        if top + bottom > 0:
-                            composition[lip] = top + bottom
+                    composition = st.session_state.lipid_composition
                     if not composition:
                         composition = {"POPC": 128}
                     box_size = 80
