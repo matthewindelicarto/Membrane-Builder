@@ -253,11 +253,11 @@ def render_tpu_3dmol(atoms, carbosil_frac, style):
 # ============== PERMEABILITY VISUALIZATION ==============
 
 def render_lipid_permeability_3dmol(pdb_data, mol_name, permeability, n_molecules=15):
-    """Render lipid membrane with animated molecules passing through using canvas overlay"""
+    """Render lipid membrane with animated molecules using CSS animations"""
     # Speed based on permeability (log scale)
     log_p = np.log10(permeability) if permeability > 0 else -10
-    # Map log_p from [-12, -4] to speed [0.5, 5]
-    speed = max(0.5, min(4.0, (log_p + 12) / 8 * 3.5 + 0.5))
+    # Map log_p from [-12, -4] to duration [8s, 2s] (higher permeability = faster = shorter duration)
+    duration = max(2, min(10, 10 - (log_p + 12) / 8 * 8))
 
     mol_colors = {
         "water": "#3498db", "ethanol": "#9b59b6", "caffeine": "#8B4513",
@@ -267,97 +267,93 @@ def render_lipid_permeability_3dmol(pdb_data, mol_name, permeability, n_molecule
 
     pdb_escaped = pdb_data.replace('\\', '\\\\').replace('`', '\\`').replace('$', '\\$')
 
+    # Generate molecule divs with staggered delays
+    np.random.seed(42)
+    molecule_divs = ""
+    for i in range(n_molecules):
+        left = np.random.uniform(15, 85)
+        delay = np.random.uniform(0, duration)
+        size = np.random.uniform(8, 14)
+        molecule_divs += f'<div class="molecule" style="left: {left}%; animation-delay: -{delay:.1f}s; width: {size}px; height: {size}px;"></div>\n'
+
     html = f"""
-    <script src="https://3dmol.org/build/3Dmol-min.js"></script>
-    <div id="container_lipid" style="width: 100%; height: 550px; position: relative;">
-        <div id="viewer_perm_lipid" style="width: 100%; height: 100%; position: absolute; top: 0; left: 0;"></div>
-        <canvas id="mol_canvas_lipid" style="width: 100%; height: 100%; position: absolute; top: 0; left: 0; pointer-events: none;"></canvas>
+    <style>
+        .perm-container {{
+            width: 100%;
+            height: 550px;
+            position: relative;
+            overflow: hidden;
+            background: #1a1a1a;
+            border-radius: 8px;
+        }}
+        .membrane-zone {{
+            position: absolute;
+            top: 35%;
+            left: 0;
+            right: 0;
+            height: 30%;
+            background: linear-gradient(180deg,
+                rgba(100,150,100,0.3) 0%,
+                rgba(80,120,80,0.5) 20%,
+                rgba(60,100,60,0.6) 50%,
+                rgba(80,120,80,0.5) 80%,
+                rgba(100,150,100,0.3) 100%);
+            pointer-events: none;
+        }}
+        .membrane-label {{
+            position: absolute;
+            top: 48%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: rgba(255,255,255,0.4);
+            font-size: 14px;
+            font-family: Arial, sans-serif;
+            pointer-events: none;
+        }}
+        .molecule {{
+            position: absolute;
+            background: {color};
+            border-radius: 50%;
+            box-shadow: 0 0 10px {color}, 0 0 20px {color}40;
+            animation: fall {duration}s linear infinite;
+            pointer-events: none;
+        }}
+        @keyframes fall {{
+            0% {{ top: -20px; opacity: 0.9; }}
+            30% {{ opacity: 0.9; }}
+            35% {{ opacity: 0.7; }}
+            50% {{ opacity: 0.5; }}
+            65% {{ opacity: 0.7; }}
+            70% {{ opacity: 0.9; }}
+            100% {{ top: calc(100% + 20px); opacity: 0.9; }}
+        }}
+        .top-label, .bottom-label {{
+            position: absolute;
+            left: 50%;
+            transform: translateX(-50%);
+            color: rgba(255,255,255,0.5);
+            font-size: 12px;
+            font-family: Arial, sans-serif;
+        }}
+        .top-label {{ top: 10px; }}
+        .bottom-label {{ bottom: 10px; }}
+    </style>
+    <div class="perm-container">
+        <div class="top-label">Extracellular</div>
+        <div class="membrane-zone"></div>
+        <div class="membrane-label">Lipid Bilayer</div>
+        {molecule_divs}
+        <div class="bottom-label">Intracellular</div>
     </div>
-    <script>
-        (function() {{
-            var viewer = $3Dmol.createViewer("viewer_perm_lipid", {{backgroundColor: "0x1a1a1a"}});
-            var pdb = `{pdb_escaped}`;
-            viewer.addModel(pdb, "pdb");
-            viewer.setStyle({{}}, {{stick: {{radius: 0.15}}, sphere: {{scale: 0.25}}}});
-            viewer.zoomTo();
-            viewer.zoom(0.8);
-            viewer.rotate(15, {{x: 1, y: 0, z: 0}});
-            viewer.render();
-
-            // Canvas animation for molecules
-            var canvas = document.getElementById('mol_canvas_lipid');
-            var container = document.getElementById('container_lipid');
-            canvas.width = container.offsetWidth;
-            canvas.height = container.offsetHeight;
-            var ctx = canvas.getContext('2d');
-
-            var molecules = [];
-            var speed = {speed};
-            var color = "{color}";
-            var nMols = {n_molecules};
-
-            // Initialize molecules
-            for (var i = 0; i < nMols; i++) {{
-                molecules.push({{
-                    x: Math.random() * canvas.width * 0.6 + canvas.width * 0.2,
-                    y: Math.random() * 30,
-                    phase: Math.random() * Math.PI * 2,
-                    size: 6 + Math.random() * 4
-                }});
-            }}
-
-            function animate() {{
-                ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-                // Draw membrane zone indicator
-                var memTop = canvas.height * 0.35;
-                var memBot = canvas.height * 0.65;
-                ctx.fillStyle = 'rgba(100, 100, 100, 0.1)';
-                ctx.fillRect(0, memTop, canvas.width, memBot - memTop);
-
-                for (var i = 0; i < molecules.length; i++) {{
-                    var mol = molecules[i];
-                    mol.phase += 0.02 * speed;
-
-                    // Calculate y position (top to bottom)
-                    var progress = (mol.phase % (Math.PI * 2)) / (Math.PI * 2);
-                    var y = progress * (canvas.height + 50) - 25;
-
-                    // Slow down in membrane region
-                    if (y > memTop && y < memBot) {{
-                        mol.phase += 0.005 * speed;  // Extra slow in membrane
-                    }}
-
-                    // Draw molecule
-                    ctx.beginPath();
-                    ctx.arc(mol.x, y, mol.size, 0, Math.PI * 2);
-                    ctx.fillStyle = color;
-                    ctx.globalAlpha = 0.85;
-                    ctx.fill();
-                    ctx.globalAlpha = 1.0;
-
-                    // Add glow effect
-                    ctx.beginPath();
-                    ctx.arc(mol.x, y, mol.size + 3, 0, Math.PI * 2);
-                    ctx.fillStyle = color;
-                    ctx.globalAlpha = 0.2;
-                    ctx.fill();
-                    ctx.globalAlpha = 1.0;
-                }}
-
-                requestAnimationFrame(animate);
-            }}
-            animate();
-        }})();
-    </script>
     """
     components.html(html, height=570)
 
 def render_tpu_permeability_3dmol(atoms, carbosil_frac, mol_name, permeability, n_molecules=12):
-    """Render TPU membrane with animated molecules passing through using canvas overlay"""
-    # Speed based on permeability
+    """Render TPU membrane with animated molecules using CSS animations"""
+    # Speed based on permeability (log scale)
     log_p = np.log10(permeability) if permeability > 0 else -10
-    speed = max(0.5, min(4.0, (log_p + 12) / 8 * 3.5 + 0.5))
+    # Map log_p from [-12, -4] to duration [8s, 2s] (higher permeability = faster = shorter duration)
+    duration = max(2, min(10, 10 - (log_p + 12) / 8 * 8))
 
     mol_colors = {
         "oxygen": "#3498db", "glucose": "#f39c12",
@@ -365,121 +361,84 @@ def render_tpu_permeability_3dmol(atoms, carbosil_frac, mol_name, permeability, 
     }
     color = mol_colors.get(mol_name.lower(), "#1abc9c")
 
-    pdb_lines = []
-    for atom in atoms:
-        line = f"ATOM  {atom['id']:5d} {atom['name']:4s} {atom['res_name']:3s}  {atom['res_id']:4d}    {atom['x']:8.3f}{atom['y']:8.3f}{atom['z']:8.3f}  1.00  0.00          {atom['element']:>2s}"
-        pdb_lines.append(line)
-    pdb_lines.append("END")
-    pdb_data = "\n".join(pdb_lines)
-    pdb_escaped = pdb_data.replace('\\', '\\\\').replace('`', '\\`').replace('$', '\\$')
-
-    box_x, box_y, box_z = 40, 40, 15
+    # Generate molecule divs with staggered delays
+    np.random.seed(42)
+    molecule_divs = ""
+    for i in range(n_molecules):
+        left = np.random.uniform(15, 85)
+        delay = np.random.uniform(0, duration)
+        size = np.random.uniform(6, 12)
+        molecule_divs += f'<div class="molecule-tpu" style="left: {left}%; animation-delay: -{delay:.1f}s; width: {size}px; height: {size}px;"></div>\n'
 
     html = f"""
-    <script src="https://3dmol.org/build/3Dmol-min.js"></script>
-    <div id="container_tpu" style="width: 100%; height: 550px; position: relative;">
-        <div id="viewer_perm_tpu" style="width: 100%; height: 100%; position: absolute; top: 0; left: 0;"></div>
-        <canvas id="mol_canvas_tpu" style="width: 100%; height: 100%; position: absolute; top: 0; left: 0; pointer-events: none;"></canvas>
+    <style>
+        .perm-container-tpu {{
+            width: 100%;
+            height: 550px;
+            position: relative;
+            overflow: hidden;
+            background: #1a1a1a;
+            border-radius: 8px;
+        }}
+        .membrane-zone-tpu {{
+            position: absolute;
+            top: 35%;
+            left: 0;
+            right: 0;
+            height: 30%;
+            background: linear-gradient(180deg,
+                rgba(100,100,150,0.3) 0%,
+                rgba(80,80,130,0.5) 20%,
+                rgba(60,60,110,0.6) 50%,
+                rgba(80,80,130,0.5) 80%,
+                rgba(100,100,150,0.3) 100%);
+            pointer-events: none;
+        }}
+        .membrane-label-tpu {{
+            position: absolute;
+            top: 48%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: rgba(255,255,255,0.4);
+            font-size: 14px;
+            font-family: Arial, sans-serif;
+            pointer-events: none;
+        }}
+        .molecule-tpu {{
+            position: absolute;
+            background: {color};
+            border-radius: 50%;
+            box-shadow: 0 0 10px {color}, 0 0 20px {color}40;
+            animation: fall-tpu {duration}s linear infinite;
+            pointer-events: none;
+        }}
+        @keyframes fall-tpu {{
+            0% {{ top: -20px; opacity: 0.9; }}
+            30% {{ opacity: 0.9; }}
+            35% {{ opacity: 0.7; }}
+            50% {{ opacity: 0.5; }}
+            65% {{ opacity: 0.7; }}
+            70% {{ opacity: 0.9; }}
+            100% {{ top: calc(100% + 20px); opacity: 0.9; }}
+        }}
+        .top-label-tpu, .bottom-label-tpu {{
+            position: absolute;
+            left: 50%;
+            transform: translateX(-50%);
+            color: rgba(255,255,255,0.5);
+            font-size: 12px;
+            font-family: Arial, sans-serif;
+        }}
+        .top-label-tpu {{ top: 10px; }}
+        .bottom-label-tpu {{ bottom: 10px; }}
+    </style>
+    <div class="perm-container-tpu">
+        <div class="top-label-tpu">External</div>
+        <div class="membrane-zone-tpu"></div>
+        <div class="membrane-label-tpu">TPU Membrane</div>
+        {molecule_divs}
+        <div class="bottom-label-tpu">Internal</div>
     </div>
-    <script>
-        (function() {{
-            var viewer = $3Dmol.createViewer("viewer_perm_tpu", {{backgroundColor: "0x1a1a1a"}});
-            var pdb = `{pdb_escaped}`;
-            viewer.addModel(pdb, "pdb");
-
-            viewer.setStyle({{resn: 'PEG'}}, {{stick: {{radius: 0.12, colorscheme: 'greenCarbon'}}}});
-            viewer.setStyle({{resn: 'PDM'}}, {{stick: {{radius: 0.14, colorscheme: 'blueCarbon'}}}});
-            viewer.setStyle({{resn: 'URE'}}, {{stick: {{radius: 0.14, colorscheme: 'orangeCarbon'}}}});
-            viewer.setStyle({{elem: 'SI'}}, {{stick: {{radius: 0.16}}, sphere: {{scale: 0.3, color: '0xf1c40f'}}}});
-
-            // Box lines
-            var hx = {box_x}/2, hy = {box_y}/2, hz = {box_z}/2;
-            var boxColor = 0x555555;
-            viewer.addLine({{start: {{x: -hx, y: -hy, z: -hz}}, end: {{x: hx, y: -hy, z: -hz}}, color: boxColor}});
-            viewer.addLine({{start: {{x: hx, y: -hy, z: -hz}}, end: {{x: hx, y: hy, z: -hz}}, color: boxColor}});
-            viewer.addLine({{start: {{x: hx, y: hy, z: -hz}}, end: {{x: -hx, y: hy, z: -hz}}, color: boxColor}});
-            viewer.addLine({{start: {{x: -hx, y: hy, z: -hz}}, end: {{x: -hx, y: -hy, z: -hz}}, color: boxColor}});
-            viewer.addLine({{start: {{x: -hx, y: -hy, z: hz}}, end: {{x: hx, y: -hy, z: hz}}, color: boxColor}});
-            viewer.addLine({{start: {{x: hx, y: -hy, z: hz}}, end: {{x: hx, y: hy, z: hz}}, color: boxColor}});
-            viewer.addLine({{start: {{x: hx, y: hy, z: hz}}, end: {{x: -hx, y: hy, z: hz}}, color: boxColor}});
-            viewer.addLine({{start: {{x: -hx, y: hy, z: hz}}, end: {{x: -hx, y: -hy, z: hz}}, color: boxColor}});
-            viewer.addLine({{start: {{x: -hx, y: -hy, z: -hz}}, end: {{x: -hx, y: -hy, z: hz}}, color: boxColor}});
-            viewer.addLine({{start: {{x: hx, y: -hy, z: -hz}}, end: {{x: hx, y: -hy, z: hz}}, color: boxColor}});
-            viewer.addLine({{start: {{x: hx, y: hy, z: -hz}}, end: {{x: hx, y: hy, z: hz}}, color: boxColor}});
-            viewer.addLine({{start: {{x: -hx, y: hy, z: -hz}}, end: {{x: -hx, y: hy, z: hz}}, color: boxColor}});
-
-            viewer.zoomTo();
-            viewer.zoom(0.5);
-            viewer.rotate(20, {{x: 1, y: 0, z: 0}});
-            viewer.rotate(-15, {{x: 0, y: 1, z: 0}});
-            viewer.render();
-
-            // Canvas animation for molecules
-            var canvas = document.getElementById('mol_canvas_tpu');
-            var container = document.getElementById('container_tpu');
-            canvas.width = container.offsetWidth;
-            canvas.height = container.offsetHeight;
-            var ctx = canvas.getContext('2d');
-
-            var molecules = [];
-            var speed = {speed};
-            var color = "{color}";
-            var nMols = {n_molecules};
-
-            // Initialize molecules
-            for (var i = 0; i < nMols; i++) {{
-                molecules.push({{
-                    x: Math.random() * canvas.width * 0.6 + canvas.width * 0.2,
-                    y: Math.random() * 30,
-                    phase: Math.random() * Math.PI * 2,
-                    size: 5 + Math.random() * 3
-                }});
-            }}
-
-            function animate() {{
-                ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-                // Draw membrane zone indicator
-                var memTop = canvas.height * 0.35;
-                var memBot = canvas.height * 0.65;
-                ctx.fillStyle = 'rgba(100, 100, 100, 0.1)';
-                ctx.fillRect(0, memTop, canvas.width, memBot - memTop);
-
-                for (var i = 0; i < molecules.length; i++) {{
-                    var mol = molecules[i];
-                    mol.phase += 0.02 * speed;
-
-                    // Calculate y position (top to bottom)
-                    var progress = (mol.phase % (Math.PI * 2)) / (Math.PI * 2);
-                    var y = progress * (canvas.height + 50) - 25;
-
-                    // Slow down in membrane region
-                    if (y > memTop && y < memBot) {{
-                        mol.phase += 0.005 * speed;
-                    }}
-
-                    // Draw molecule
-                    ctx.beginPath();
-                    ctx.arc(mol.x, y, mol.size, 0, Math.PI * 2);
-                    ctx.fillStyle = color;
-                    ctx.globalAlpha = 0.85;
-                    ctx.fill();
-                    ctx.globalAlpha = 1.0;
-
-                    // Add glow effect
-                    ctx.beginPath();
-                    ctx.arc(mol.x, y, mol.size + 2, 0, Math.PI * 2);
-                    ctx.fillStyle = color;
-                    ctx.globalAlpha = 0.2;
-                    ctx.fill();
-                    ctx.globalAlpha = 1.0;
-                }}
-
-                requestAnimationFrame(animate);
-            }}
-            animate();
-        }})();
-    </script>
     """
     components.html(html, height=570)
 
