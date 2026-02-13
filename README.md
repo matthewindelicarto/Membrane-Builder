@@ -4,7 +4,7 @@ Build lipid bilayer and TPU membranes, visualize molecular permeability.
 
 ## Live Demo
 
-**[Launch Membrane Builder](https://membranebuilder.streamlit.app)** - Free web app, no installation required.
+**[Launch Membrane Builder](https://membrane-builder.streamlit.app)** - Free web app, no installation required.
 
 ## Features
 
