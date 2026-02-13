@@ -256,8 +256,14 @@ def render_tpu_3dmol(atoms, carbosil_frac, style):
 def render_lipid_permeability_3dmol(pdb_data, mol_name, permeability, n_molecules=15):
     """Render lipid membrane with animated molecules using JavaScript"""
     # Speed based on permeability (log scale)
+    # Higher permeability = faster movement
+    # Lower permeability = slower movement, especially through membrane
     log_p = np.log10(permeability) if permeability > 0 else -10
-    speed = max(0.5, min(4.0, (log_p + 12) / 8 * 3.5 + 0.5))
+    # Base speed outside membrane (always relatively fast)
+    base_speed = 2.0
+    # Membrane speed depends on permeability: range from 0.05 (very slow) to 2.0 (fast)
+    # log_p typically ranges from -10 (very low) to -2 (very high)
+    membrane_speed = max(0.05, min(2.0, (log_p + 10) / 8 * 2.0))
 
     mol_colors = {
         "water": "#3498db", "ethanol": "#9b59b6", "caffeine": "#8B4513",
@@ -277,7 +283,8 @@ def render_lipid_permeability_3dmol(pdb_data, mol_name, permeability, n_molecule
     var container = document.getElementById('container');
     var molecules = [];
     var numMols = {n_molecules};
-    var speed = {speed};
+    var baseSpeed = {base_speed};
+    var membraneSpeed = {membrane_speed};
     var color = '{color}';
 
     for(var i=0; i<numMols; i++){{
@@ -295,15 +302,22 @@ def render_lipid_permeability_3dmol(pdb_data, mol_name, permeability, n_molecule
     function animate(){{
         for(var i=0; i<molecules.length; i++){{
             var mol = molecules[i];
-            mol.y += speed;
+
+            // Slow down significantly in membrane region (140-260 px)
+            var inMembrane = (mol.y > 140 && mol.y < 260);
+            var currentSpeed = inMembrane ? membraneSpeed : baseSpeed;
+
+            mol.y += currentSpeed;
             if(mol.y > 420) mol.y = -20;
             mol.style.top = mol.y + 'px';
 
-            // Fade in membrane region
-            if(mol.y > 140 && mol.y < 260){{
+            // Visual feedback - fade and shrink slightly in membrane
+            if(inMembrane){{
                 mol.style.opacity = '0.5';
+                mol.style.transform = 'scale(0.8)';
             }} else {{
                 mol.style.opacity = '0.9';
+                mol.style.transform = 'scale(1)';
             }}
         }}
         requestAnimationFrame(animate);
@@ -318,7 +332,8 @@ def render_tpu_permeability_3dmol(atoms, carbosil_frac, mol_name, permeability, 
     """Render TPU membrane with animated molecules using JavaScript"""
     # Speed based on permeability (log scale)
     log_p = np.log10(permeability) if permeability > 0 else -10
-    speed = max(0.5, min(4.0, (log_p + 12) / 8 * 3.5 + 0.5))
+    base_speed = 2.0
+    membrane_speed = max(0.05, min(2.0, (log_p + 10) / 8 * 2.0))
 
     mol_colors = {
         "oxygen": "#3498db", "glucose": "#f39c12",
@@ -338,7 +353,8 @@ def render_tpu_permeability_3dmol(atoms, carbosil_frac, mol_name, permeability, 
     var container = document.getElementById('container_tpu');
     var molecules = [];
     var numMols = {n_molecules};
-    var speed = {speed};
+    var baseSpeed = {base_speed};
+    var membraneSpeed = {membrane_speed};
     var color = '{color}';
 
     for(var i=0; i<numMols; i++){{
@@ -356,15 +372,22 @@ def render_tpu_permeability_3dmol(atoms, carbosil_frac, mol_name, permeability, 
     function animate(){{
         for(var i=0; i<molecules.length; i++){{
             var mol = molecules[i];
-            mol.y += speed;
+
+            // Slow down significantly in membrane region
+            var inMembrane = (mol.y > 140 && mol.y < 260);
+            var currentSpeed = inMembrane ? membraneSpeed : baseSpeed;
+
+            mol.y += currentSpeed;
             if(mol.y > 420) mol.y = -20;
             mol.style.top = mol.y + 'px';
 
-            // Fade in membrane region
-            if(mol.y > 140 && mol.y < 260){{
+            // Visual feedback
+            if(inMembrane){{
                 mol.style.opacity = '0.5';
+                mol.style.transform = 'scale(0.8)';
             }} else {{
                 mol.style.opacity = '0.9';
+                mol.style.transform = 'scale(1)';
             }}
         }}
         requestAnimationFrame(animate);
@@ -790,6 +813,12 @@ with tab_lipid:
     with col2:
         st.subheader("3D Viewer")
         if st.session_state.pdb_data:
+            # Check if current formulation matches built membrane
+            current_composition = {lip: top + bottom for lip, (top, bottom) in lipid_values.items() if top + bottom > 0}
+            built_composition = st.session_state.lipid_composition or {}
+            if current_composition != built_composition:
+                st.warning("⚠️ Formulation changed. Click 'Build Membrane' to update.")
+
             style = st.radio("Style", ["stick", "line", "sphere"], horizontal=True, key="lipid_style")
             render_lipid_3dmol(st.session_state.pdb_data, style)
 
@@ -799,8 +828,8 @@ with tab_lipid:
                 c1, c2, c3, c4, c5 = st.columns(5)
                 c1.metric("Lipids", props['total_lipids'])
                 c2.metric("Atoms", f"{props['n_atoms']:,}")
-                c3.metric("Thickness", f"{props['thickness']} A")
-                c4.metric("Area/Lipid", f"{props['area_per_lipid']} A^2")
+                c3.metric("Thickness", f"{props['thickness']} Å")
+                c4.metric("Area/Lipid", f"{props['area_per_lipid']} Å²")
                 c5.metric("Bending Mod.", f"{props['bending_modulus']} kT")
         else:
             st.info("Build a membrane to see the 3D structure")
@@ -873,19 +902,29 @@ with tab_tpu:
             membrane = st.session_state.tpu_membrane
             props = membrane.properties
 
+            # Check if current formulation matches built membrane
+            current_tpu_comp = {"Sparsa1": sparsa1_frac, "Sparsa2": sparsa2_frac,
+                               "Carbosil1": carbosil1_frac, "Carbosil2": carbosil2_frac}
+            built_tpu_comp = membrane.composition
+            if abs(current_tpu_comp.get("Sparsa1", 0) - built_tpu_comp.get("Sparsa1", 0)) > 0.01 or \
+               abs(current_tpu_comp.get("Sparsa2", 0) - built_tpu_comp.get("Sparsa2", 0)) > 0.01 or \
+               abs(current_tpu_comp.get("Carbosil1", 0) - built_tpu_comp.get("Carbosil1", 0)) > 0.01 or \
+               abs(current_tpu_comp.get("Carbosil2", 0) - built_tpu_comp.get("Carbosil2", 0)) > 0.01:
+                st.warning("⚠️ Formulation changed. Click 'Build Membrane' to update.")
+
             tpu_style = st.radio("Style", ["stick", "sphere", "line"], horizontal=True, key="tpu_style")
 
             comp = membrane.composition
-            sparsa_frac = comp.get("Sparsa1", 0) + comp.get("Sparsa2", 0)
-            carbosil_frac = comp.get("Carbosil1", 0) + comp.get("Carbosil2", 0)
+            sparsa_frac_built = comp.get("Sparsa1", 0) + comp.get("Sparsa2", 0)
+            carbosil_frac_built = comp.get("Carbosil1", 0) + comp.get("Carbosil2", 0)
 
-            atoms = generate_tpu_polymer_chains(membrane, sparsa_frac, carbosil_frac)
-            render_tpu_3dmol(atoms, carbosil_frac, tpu_style)
+            atoms = generate_tpu_polymer_chains(membrane, sparsa_frac_built, carbosil_frac_built)
+            render_tpu_3dmol(atoms, carbosil_frac_built, tpu_style)
 
             st.markdown("**Membrane Properties**")
             c1, c2, c3, c4, c5 = st.columns(5)
-            c1.metric("Thickness", f"{props.thickness_um} um")
-            c2.metric("Density", f"{props.density:.2f} g/cm3")
+            c1.metric("Thickness", f"{props.thickness_um} μm")
+            c2.metric("Density", f"{props.density:.2f} g/cm³")
             c3.metric("Water Uptake", f"{props.water_uptake:.1f}%")
             c4.metric("Free Volume", f"{props.free_volume_fraction:.3f}")
             c5.metric("Soft Seg.", f"{props.soft_segment_fraction*100:.0f}%")
@@ -937,7 +976,7 @@ with tab_perm:
                     mol_charge, mol_pka = preset["charge"], preset["pka"]
 
                     # Display preset values (read-only style)
-                    st.markdown(f"**Molecular Weight:** {mol_mw} Da")
+                    st.markdown(f"**Molecular Weight:** {mol_mw} g/mol")
                     st.markdown(f"**Surface Area:** {mol_asa} Å²")
                     st.markdown(f"**H-Bond Donors:** {mol_hbd}")
                     st.markdown(f"**H-Bond Acceptors:** {mol_hba}")
@@ -948,11 +987,11 @@ with tab_perm:
                     mol_name = "custom"
                     c1, c2 = st.columns(2)
                     with c1:
-                        mol_mw = st.number_input("Molecular Weight", value=100, min_value=1, key="perm_mw_custom")
+                        mol_mw = st.number_input("Molecular Weight (g/mol)", value=100, min_value=1, key="perm_mw_custom")
                         mol_hbd = st.number_input("H-Bond Donors", value=0, min_value=0, key="perm_hbd_custom")
                         mol_charge = st.number_input("Charge", value=0.0, step=0.1, key="perm_charge_custom")
                     with c2:
-                        mol_asa = st.number_input("Surface Area (A^2)", value=100, min_value=1, key="perm_asa_custom")
+                        mol_asa = st.number_input("Surface Area (Å²)", value=100, min_value=1, key="perm_asa_custom")
                         mol_hba = st.number_input("H-Bond Acceptors", value=0, min_value=0, key="perm_hba_custom")
                         pka_input = st.text_input("pKa", value="", key="perm_pka_custom")
                     mol_pka = float(pka_input) if pka_input else None
