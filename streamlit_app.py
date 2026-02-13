@@ -12,6 +12,7 @@ from tpu_builder import (
     MoleculeDescriptor as TPUMoleculeDescriptor
 )
 
+# Membrane Builder App
 st.set_page_config(
     page_title="Membrane Builder",
     layout="wide"
