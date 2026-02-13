@@ -926,32 +926,42 @@ with tab_perm:
                     "Aspirin": {"mw": 180, "asa": 140, "hbd": 1, "hba": 4, "charge": -1, "pka": 3.5},
                 }
 
-                selected_mol = st.selectbox("Molecule", ["Custom"] + list(mol_presets.keys()), key="perm_lipid_mol")
+                selected_mol = st.selectbox("Molecule", list(mol_presets.keys()) + ["Custom"], key="perm_lipid_mol")
 
                 if selected_mol != "Custom":
                     preset = mol_presets[selected_mol]
-                    mol_name, mol_mw, mol_asa = selected_mol.lower(), preset["mw"], preset["asa"]
-                    mol_hbd, mol_hba, mol_charge, mol_pka = preset["hbd"], preset["hba"], preset["charge"], preset["pka"]
-                else:
-                    mol_name, mol_mw, mol_asa, mol_hbd, mol_hba, mol_charge, mol_pka = "custom", 100, 100, 0, 0, 0, None
+                    mol_name = selected_mol.lower()
+                    mol_mw, mol_asa = preset["mw"], preset["asa"]
+                    mol_hbd, mol_hba = preset["hbd"], preset["hba"]
+                    mol_charge, mol_pka = preset["charge"], preset["pka"]
 
-                c1, c2 = st.columns(2)
-                with c1:
-                    mol_mw = st.number_input("Molecular Weight", value=mol_mw, min_value=1, key="perm_mw")
-                    mol_hbd = st.number_input("H-Bond Donors", value=mol_hbd, min_value=0, key="perm_hbd")
-                    mol_charge = st.number_input("Charge", value=float(mol_charge), step=0.1, key="perm_charge")
-                with c2:
-                    mol_asa = st.number_input("Surface Area (A^2)", value=mol_asa, min_value=1, key="perm_asa")
-                    mol_hba = st.number_input("H-Bond Acceptors", value=mol_hba, min_value=0, key="perm_hba")
-                    pka_input = st.text_input("pKa", value=str(mol_pka) if mol_pka else "", key="perm_pka")
+                    # Display preset values (read-only style)
+                    st.markdown(f"**Molecular Weight:** {mol_mw} Da")
+                    st.markdown(f"**Surface Area:** {mol_asa} Å²")
+                    st.markdown(f"**H-Bond Donors:** {mol_hbd}")
+                    st.markdown(f"**H-Bond Acceptors:** {mol_hba}")
+                    st.markdown(f"**Charge:** {mol_charge}")
+                    if mol_pka:
+                        st.markdown(f"**pKa:** {mol_pka}")
+                else:
+                    mol_name = "custom"
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        mol_mw = st.number_input("Molecular Weight", value=100, min_value=1, key="perm_mw_custom")
+                        mol_hbd = st.number_input("H-Bond Donors", value=0, min_value=0, key="perm_hbd_custom")
+                        mol_charge = st.number_input("Charge", value=0.0, step=0.1, key="perm_charge_custom")
+                    with c2:
+                        mol_asa = st.number_input("Surface Area (A^2)", value=100, min_value=1, key="perm_asa_custom")
+                        mol_hba = st.number_input("H-Bond Acceptors", value=0, min_value=0, key="perm_hba_custom")
+                        pka_input = st.text_input("pKa", value="", key="perm_pka_custom")
+                    mol_pka = float(pka_input) if pka_input else None
 
                 if st.button("Calculate Permeability", type="primary", use_container_width=True, key="calc_perm_lipid"):
                     with st.spinner("Calculating..."):
                         try:
-                            pka_val = float(pka_input) if pka_input else None
                             mol = MoleculeDescriptor.simple(name=mol_name, molecular_weight=float(mol_mw),
                                 total_asa=float(mol_asa), n_hbd=int(mol_hbd), n_hba=int(mol_hba),
-                                charge=float(mol_charge), pka=pka_val)
+                                charge=float(mol_charge), pka=mol_pka)
                             composition = st.session_state.lipid_composition
                             if not composition: composition = {"POPC": 128}
                             predictor = PermeabilityPredictor(composition=composition)
